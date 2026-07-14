@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write        # OIDC for the plan job
   pull-requests: write
 
 jobs:
@@ -33,6 +34,29 @@ jobs:
           scan-ref: terraform
           severity: HIGH,CRITICAL
           exit-code: "0"
-      # Plan is illustrative only — no AWS creds wired here; a real pipeline
-      # would assume a read-only role via OIDC and post the plan to the PR.
-      # - run: terraform plan -no-color
+
+  # `terraform plan` against the real S3 backend, using OIDC (no static keys) to
+  # assume a READ-ONLY role. Gated on AWS_PLAN_ROLE_ARN so it's skipped until
+  # cloud creds exist (keeping CI green without an account), while remaining fully
+  # wired. The committed, sanitised plan lives at terraform/PLAN.txt.
+  plan:
+    needs: validate
+    if: vars.AWS_PLAN_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: terraform } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.5" }
+      - name: Configure AWS credentials via OIDC (read-only)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: eu-west-2
+      - run: terraform init           # real backend: S3 + DynamoDB lock (see versions.tf)
+      - run: terraform plan -no-color -out=plan.bin
+      - run: terraform show -no-color plan.bin | tee plan.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/plan.txt

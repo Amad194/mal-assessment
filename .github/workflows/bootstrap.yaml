@@ -1,0 +1,25 @@
+name: bootstrap
+# One-shot: canonicalise terraform fmt on the runner and commit. Removed after.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.5" }
+      - name: terraform fmt
+        working-directory: terraform
+        run: terraform fmt -recursive
+      - name: Show what changed
+        run: git -C . --no-pager diff --stat
+      - name: Commit
+        run: |
+          git config user.name  "Amad194"
+          git config user.email "amadshahzad830@gmail.com"
+          git add terraform/
+          git commit -m "chore: terraform fmt canonicalise [skip ci]" || echo "nothing to commit"
+          git push
