@@ -1,7 +1,7 @@
 # Default values. values-prod.yaml overlays the production-hardened settings.
 image:
   repository: ghcr.io/amad194/accounts-api
-  tag: "0ed73bb"
+  tag: "9af8cc6"
   pullPolicy: IfNotPresent
 
 replicaCount: 3
