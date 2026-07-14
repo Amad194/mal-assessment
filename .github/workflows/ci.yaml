@@ -12,6 +12,11 @@ on:
   pull_request:
     paths: ["app/**", ".github/workflows/ci.yaml"]
 
+# Serialize CI per branch so two runs can't race on the gitops-bump push.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write   # bump image tag for GitOps
   packages: write   # push to ghcr.io
@@ -98,5 +103,10 @@ jobs:
           git config user.name  "Amad194"
           git config user.email "amadshahzad830@gmail.com"
           git add deploy/helm/accounts/values.yaml
-          git commit -m "ci: bump accounts-api image to ${{ needs.build-scan-push.outputs.tag }} [skip ci]" || echo "no change"
-          git push
+          git commit -m "ci: bump accounts-api image to ${{ needs.build-scan-push.outputs.tag }} [skip ci]" || { echo "no change"; exit 0; }
+          # Rebase-and-retry so a concurrent push can't reject the bump.
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main && git push && exit 0
+            sleep $((i * 3))
+          done
+          echo "failed to push bump after retries" >&2; exit 1
