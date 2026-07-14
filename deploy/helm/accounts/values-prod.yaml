@@ -6,7 +6,14 @@ kafka:
   brokers: "REPLACE_WITH_MSK_BOOTSTRAP_BROKERS" # from terraform output msk_bootstrap_brokers
 
 serviceAccount:
-  roleArn: "REPLACE_WITH_IRSA_ROLE_ARN" # from terraform output irsa_role_arn
+  roleArn: "REPLACE_WITH_IRSA_ROLE_ARN"                   # terraform output irsa_role_arn
+  consumerRoleArn: "REPLACE_WITH_CONSUMER_IRSA_ROLE_ARN"  # terraform output consumer_irsa_role_arn
+
+otel:
+  endpoint: "http://otel-collector.monitoring.svc:4317"
+
+consumer:
+  enabled: true
 
 externalSecrets:
   enabled: true

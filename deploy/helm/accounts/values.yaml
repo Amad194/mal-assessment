@@ -17,6 +17,27 @@ config:
   SHUTDOWN_DELAY: "5s"
   SHUTDOWN_TIMEOUT: "25s"
 
+# OpenTelemetry: point at an OTLP/gRPC collector to enable tracing. Empty => off.
+otel:
+  endpoint: "" # e.g. http://otel-collector.monitoring.svc:4317
+
+# The idempotent Kafka consumer (accounts.audit -> Postgres audit_log).
+consumer:
+  enabled: true
+  image:
+    repository: ghcr.io/amad194/accounts-consumer
+    tag: "0.1.0"
+  replicaCount: 2
+  groupId: accounts-audit-consumer
+  dlqTopic: accounts.audit.dlq
+  maxRetries: "5"
+  # Consumer reads DATABASE_URL from its own least-privilege secret (accounts_consumer role).
+  externalSecrets:
+    remoteKey: prod/accounts/consumer-database-url
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 128Mi }
+
 # Secret (DATABASE_URL) -> hydrated from AWS Secrets Manager by External
 # Secrets Operator. Disable to fall back to a plain Secret for local kind runs.
 externalSecrets:
@@ -31,9 +52,11 @@ localSecret:
 
 serviceAccount:
   create: true
-  # IRSA: the IAM role the pod assumes (Secrets Manager read, MSK connect).
+  # IRSA: the IAM role the API pod assumes (Secrets Manager read, MSK produce).
   # Filled from the Terraform output. Empty => no annotation (local runs).
   roleArn: ""
+  # Separate IRSA role for the consumer (Secrets read, MSK consume + DLQ produce).
+  consumerRoleArn: ""
 
 service:
   port: 80

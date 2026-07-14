@@ -1,7 +1,7 @@
-# Local dev stack: Postgres + single-broker Kafka + the service.
-# This is the local equivalent of RDS (Postgres) and MSK (Kafka). It exists so
-# you can exercise the real code paths (readiness, DB read, audit publish)
-# without a cloud account. See README for the AWS mapping.
+# Local dev stack: Postgres + single-broker Kafka + the API + the consumer.
+# Local equivalents of RDS (Postgres) and MSK (Kafka). Lets you exercise the real
+# code paths (readiness, DB read, audit publish, idempotent consume, DLQ) without
+# a cloud account. See README for the AWS mapping.
 services:
   postgres:
     image: postgres:16-alpine
@@ -11,7 +11,8 @@ services:
       POSTGRES_DB: accounts
     ports: ["5432:5432"]
     volumes:
-      - ./db/migrations/0001_init.up.sql:/docker-entrypoint-initdb.d/0001_init.up.sql:ro
+      - ./db/migrations/0001_init.up.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./db/migrations/0002_audit.up.sql:/docker-entrypoint-initdb.d/02_audit.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U accounts"]
       interval: 5s
@@ -28,6 +29,7 @@ services:
       KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
       ALLOW_PLAINTEXT_LISTENER: "yes"
     ports: ["9092:9092"]
 
@@ -42,3 +44,20 @@ services:
       KAFKA_BROKERS: kafka:9092
       KAFKA_TOPIC: accounts.audit
     ports: ["8080:8080"]
+
+  accounts-consumer:
+    build: ./consumer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      # Locally reuses the accounts user; in prod this is the least-privilege
+      # accounts_consumer role (see db/roles.sql).
+      DATABASE_URL: postgres://accounts:accounts@postgres:5432/accounts?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: accounts.audit
+      KAFKA_DLQ_TOPIC: accounts.audit.dlq
+      KAFKA_GROUP_ID: accounts-audit-consumer
+      MAX_RETRIES: "5"
+    ports: ["8081:8080"]

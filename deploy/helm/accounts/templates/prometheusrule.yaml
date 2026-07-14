@@ -72,4 +72,15 @@ spec:
           annotations:
             summary: "accounts-api audit events failing to publish to Kafka"
             description: "Audit trail is degraded (regulatory concern), reads still served."
+
+    - name: consumer.alerts
+      rules:
+        - alert: ConsumerDeadLettering
+          # Any sustained dead-lettering means audit events are not being recorded.
+          expr: rate(consumer_messages_dead_lettered_total[5m]) > 0
+          for: 10m
+          labels: { severity: page }
+          annotations:
+            summary: "audit consumer is dead-lettering events"
+            description: "Poison or persistently-failing audit events are hitting the DLQ; the audit trail is incomplete (regulatory concern)."
 {{- end }}

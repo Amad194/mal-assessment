@@ -47,3 +47,8 @@ variable "app_service_account" {
   type    = string
   default = "accounts-accounts" # {release}-accounts, matches the Helm SA name
 }
+
+variable "app_consumer_service_account" {
+  type    = string
+  default = "accounts-accounts-consumer" # consumer Helm SA name
+}

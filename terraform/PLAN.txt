@@ -1,0 +1,86 @@
+================================================================================
+ terraform plan — accounts / bank-platform      (SANITISED, representative)
+================================================================================
+NOTE ON PROVENANCE
+  The assessment is explicitly "do not apply, no paid cloud account". `terraform
+  validate` and `terraform fmt -check` run green in CI (see .github/workflows/
+  terraform.yaml). A real `terraform plan` requires AWS credentials + the S3
+  backend, which aren't available here, so this file is the representative plan
+  this configuration produces. Account IDs, ARN suffixes and hostnames are
+  redacted as <REDACTED>. Reproduce with:
+
+    cd terraform
+    terraform init          # S3 backend: amad194-tfstate-bank-platform (see versions.tf)
+    terraform plan -out plan.bin
+    terraform show -no-color plan.bin > PLAN.txt   # then sanitise account ids
+
+Terraform will perform the following actions (summary; child-module resources
+collapsed for readability):
+
+  # networking (module.vpc — terraform-aws-modules/vpc/aws)
+  + aws_vpc.this                                     10.20.0.0/16
+  + aws_subnet.private[0..2]                         3x /20, one per AZ
+  + aws_subnet.public[0..2]                          3x /20, one per AZ
+  + aws_nat_gateway.this[0..2]                       one per AZ (no cross-AZ SPOF)
+  + aws_internet_gateway.this
+  + aws_route_table + associations                   (public/private)
+
+  # cluster (module.eks — terraform-aws-modules/eks/aws)
+  + aws_eks_cluster.this                             version 1.30, private+public API
+      ~ encryption_config                            KMS (secrets)
+      ~ enabled_cluster_log_types                    [api audit authenticator ...]
+  + aws_eks_node_group.default                       m6i.large, min 3 / max 6, IMDSv2 required
+  + aws_iam_openid_connect_provider.oidc             (enable_irsa)
+  + aws_eks_addon.{coredns,kube-proxy,vpc-cni,aws-ebs-csi-driver}
+
+  # data tier (module.rds — terraform-aws-modules/rds/aws)
+  + aws_db_instance.this                             postgres 16, db.t4g.medium
+      multi_az                = true
+      storage_encrypted       = true    (KMS)
+      backup_retention_period = 14
+      deletion_protection     = true
+      performance_insights_enabled = true
+  + aws_db_subnet_group.this                         private subnets
+  + aws_security_group.rds                           ingress 5432 from EKS nodes SG only
+  + random_password.db                               (sensitive; -> Secrets Manager only)
+
+  # messaging tier
+  + aws_msk_cluster.accounts                          kafka 3.6.0, 3 brokers, kafka.m5.large
+      encryption_in_transit.client_broker = TLS
+      client_authentication.sasl.iam      = true
+  + aws_security_group.msk                            ingress 9094 (TLS) from EKS nodes SG
+  + aws_cloudwatch_log_group.msk                      retention 30d
+
+  # image registry
+  + aws_ecr_repository.accounts                       IMMUTABLE tags, scan_on_push, KMS
+  + aws_ecr_lifecycle_policy.accounts                 keep last 20 images
+
+  # secrets (values are sensitive; not shown)
+  + aws_secretsmanager_secret.database_url            prod/accounts/database-url
+  + aws_secretsmanager_secret_version.database_url    (sensitive)
+  + aws_secretsmanager_secret.consumer_database_url   prod/accounts/consumer-database-url
+  + aws_secretsmanager_secret_version.consumer_database_url  (sensitive)
+  + random_password.consumer_db                       (sensitive)
+
+  # workload identity (IRSA) — least privilege, one role per workload
+  + aws_iam_role.accounts_irsa                        sub: system:serviceaccount:accounts:accounts-accounts
+  + aws_iam_role_policy.secrets_read                  GetSecretValue on API secret only
+  + aws_iam_role_policy.msk_produce                   WriteData on topic/accounts.audit only
+  + aws_iam_role.accounts_consumer_irsa               sub: ...:accounts-accounts-consumer
+  + aws_iam_role_policy.consumer_secrets_read         GetSecretValue on consumer secret only
+  + aws_iam_role_policy.consumer_msk                  ReadData accounts.audit; WriteData DLQ only
+
+Plan: 63 to add, 0 to change, 0 to destroy.
+
+Changes to Outputs:
+  + cluster_endpoint                = (known after apply)
+  + ecr_repository_url              = "<REDACTED>.dkr.ecr.eu-west-2.amazonaws.com/accounts-api"
+  + irsa_role_arn                   = "arn:aws:iam::<REDACTED>:role/accounts-api-irsa"
+  + consumer_irsa_role_arn          = "arn:aws:iam::<REDACTED>:role/accounts-consumer-irsa"
+  + msk_bootstrap_brokers_tls       = (known after apply)
+  + rds_endpoint                    = (known after apply)
+  + database_url_secret_arn         = "arn:aws:secretsmanager:eu-west-2:<REDACTED>:secret:prod/accounts/database-url-<REDACTED>"
+  + consumer_database_url_secret_arn= "arn:aws:secretsmanager:eu-west-2:<REDACTED>:secret:prod/accounts/consumer-database-url-<REDACTED>"
+
+(Resource count is indicative: the vpc/eks/rds community modules expand to ~60
+child resources; the exact number depends on module minor versions.)

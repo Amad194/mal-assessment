@@ -6,11 +6,13 @@ IMAGE ?= ghcr.io/amad194/accounts-api:dev
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n",$$1,$$2}'
 
-deps: ## Resolve Go modules and write go.sum
+deps: ## Resolve Go modules and write go.sum (both modules)
 	cd app && go mod tidy
+	cd consumer && go mod tidy
 
-test: ## Run unit tests with race detector
+test: ## Run unit tests with race detector (both modules)
 	cd app && go test -race ./...
+	cd consumer && go test -race ./...
 
 build: ## Build the Go binary
 	cd app && CGO_ENABLED=0 go build -o ../bin/accounts-api .

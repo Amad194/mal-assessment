@@ -1,237 +1,136 @@
-# Decisions
+# Decisions & Trade-offs
 
-Part 2 of the assessment: the reasoning that connects the build. This documents
-what I optimised for, the trade-offs I made, and — just as important — what I
-consciously left out in a 3–4 hour window.
-
-> Guiding principle from the brief: *one thing done correctly beats five things
-> half wired.* I built a **coherent vertical slice** — one service, correctly
-> productionised end to end — rather than a broad but shallow platform.
+Part 2. One senior's reasoning, framed around the dominant constraint of a
+regulated bank: **failure behaviour, auditability, and blast-radius control**.
+Guiding principle from the brief — *one thing done correctly beats five things
+half wired* — so this is a coherent vertical slice, productionised end to end.
 
 ---
 
-## 1. What I optimised for, and priorities
+## 1. The three decisions I'd defend hardest
 
-A regulated bank's platform is judged less on features than on **failure
-behaviour, auditability, and blast-radius control.** I ranked effort as:
+**a) Draining is done in the pod lifecycle, not hoped for.**
+Zero-downtime rollout is the first thing you read, so it's the thing I made
+correct rather than plausible. On termination: the `preStop` hook calls
+`/internal/drain` so **readiness fails first**, then sleeps `SHUTDOWN_DELAY` while
+the pod keeps serving; only then does SIGTERM arrive and the app drains in-flight
+connections — all inside `terminationGracePeriodSeconds: 40`, with
+`maxUnavailable: 0` and a PDB floor of 2. *Trade-off:* every rollout is ~5s
+slower per pod, and the drain logic lives in the app (distroless has no shell). I
+take slower, correct rollouts over fast ones that drop requests.
 
-1. **Correct reliability primitives** — liveness vs readiness that actually mean
-   different things, graceful drain that doesn't drop requests, PDB + spread so
-   maintenance can't take the service down.
-2. **Security controls a bank is held to** — no static secrets, least-privilege
-   identity, encryption in transit and at rest, a hardened runtime, a signed and
-   scanned supply chain.
-3. **Observability that supports an SLO** — RED metrics, burn-rate alerting, a
-   dashboard, structured logs.
-4. **Reproducible delivery** — IaC that validates, GitOps that's the single
-   source of truth.
+**b) Messaging primitive: Kafka (→ MSK), consumed idempotently.**
+A bank's audit/fraud/downstream fan-out wants a **replayable, ordered, durable
+log**, not a queue that deletes on ack. Kafka gives partition-ordered, retained
+events multiple consumer groups can read independently and **replay** after an
+incident — exactly what an auditor needs. *Trade-off:* Kafka is heavier to run
+than SQS/RabbitMQ and offset management is on me. I accept that for replayability
+and ordering. Delivery is at-least-once; the consumer makes the **effect**
+exactly-once via a `processed_events` dedupe ledger + a transactional upsert
+(`store.go`), so a redelivered event is a no-op.
 
-The application itself got the *least* effort by design — it's a trivial reader.
-
----
-
-## 2. Architecture
-
-```
-                 Internet
-                    │  TLS
-             ┌──────▼───────┐
-             │ Ingress (ALB │   (kind: ingress-nginx)
-             │ /nginx)      │
-             └──────┬───────┘
-        NetworkPolicy: only ingress + Prometheus may reach the pods
-             ┌──────▼────────────────────┐
-             │  accounts-api (Deployment) │  3–20 replicas, HPA, PDB,
-             │  distroless, non-root, RO  │  topology spread across AZs
-             └───┬───────────────┬────────┘
-     IRSA (no    │               │  audit events (best-effort, async)
-     static keys)│               │
-        ┌────────▼───┐     ┌─────▼──────┐
-        │ RDS Postgres│     │ MSK (Kafka)│
-        │ Multi-AZ,   │     │ 3 brokers, │
-        │ KMS at rest │     │ TLS, IAM   │
-        └─────────────┘     └────────────┘
-   DATABASE_URL from Secrets Manager ──► External Secrets Operator ──► K8s Secret
-```
-
-Delivery: **GitHub Actions builds/scans/signs** → bumps the image tag in Git →
-**Argo CD** reconciles the cluster to match Git.
+**c) Pooling: PgBouncer in transaction mode.**
+Many small stateless replicas (3→20 under HPA) each holding a pgx pool would
+exhaust RDS connection slots long before CPU. I'd front RDS with **PgBouncer in
+transaction pooling mode** so a backend connection is held only for the duration
+of a transaction — maximising reuse across a fleet of short-lived readers.
+*Trade-off:* transaction mode forbids session-scoped state (session-level
+`SET`, server-side prepared-statement caching, `LISTEN/NOTIFY`); the app must use
+the simple protocol / disable statement caching. For a stateless SELECT service
+that's free; I would *not* use transaction mode if the app needed session state.
 
 ---
 
-## 3. The service
+## 2. SLO & alerting
 
-- **Go, stdlib HTTP** (`net/http` 1.22 method routing). Chosen for a tiny static
-  binary → a `distroless/static` image with a near-zero CVE surface, fast cold
-  start (matters for HPA scale-up under load), and because it's the idiom a bank
-  SRE team expects. Dependencies kept to three: `pgx` (Postgres), `client_golang`
-  (metrics), `kafka-go` (MSK).
-- **Ports over globals.** `Store` and `Publisher` are interfaces so handlers are
-  unit-tested against fakes with no live infra (`app/main_test.go`). That's what
-  makes the reliability behaviour *testable*, not just asserted.
-- **Liveness ≠ readiness.** `/healthz` only reports the process is alive and
-  **must not** touch Postgres — otherwise a transient DB blip would make the
-  kubelet kill and restart healthy pods, turning a dependency wobble into an
-  outage. `/readyz` *does* check Postgres (with a 2s timeout) and also fails when
-  draining, so traffic only lands on pods that can serve it.
-- **Audit events off the critical path.** A read emits an `account.read` event to
-  Kafka asynchronously and best-effort. A Kafka outage degrades the audit trail
-  (alerted on) but never fails a customer read. The reverse trade-off — blocking
-  reads on the audit write — would be wrong for availability.
+- **SLI:** proportion of `GET /api/accounts/{id}` requests served **without a
+  server error and within 300 ms**, measured at the server. Derived from user
+  impact — a customer feels a slow or failed balance read, not CPU%.
+- **Target / window:** **99.5%** over a **rolling 30 days** (≈3.6h error budget).
+- **Paging that survives slow degradation:** a single static threshold (“page at
+  1% errors”) misses a gradual bleed that sits at 0.9% for a day and quietly
+  burns the whole budget. So I page on **error-budget burn rate over two
+  windows**: fast burn = >14.4× budget over **both** 5m and 1h
+  (`AccountsFastErrorBurn`). The long window catches the slow bleed; the short
+  window makes it fast; requiring both suppresses false pages from a brief blip.
+- **The one alert I'd keep:** `AccountsFastErrorBurn`. It's the closest proxy to
+  "users are being harmed right now," and burn-rate framing means it fires for
+  both a sharp outage and a slow degradation. Everything else
+  (latency-p99, DB-down, dead-lettering) is diagnosis I can live without at 3am if
+  I only get one page.
 
 ---
 
-## 4. Reliability on Kubernetes
+## 3. Least privilege & blast radius
 
-| Control                       | Why                                                                    |
-| ----------------------------- | ---------------------------------------------------------------------- |
-| **Graceful drain in-process** | On SIGTERM: fail readiness → sleep `SHUTDOWN_DELAY` (endpoints converge) → drain connections within `SHUTDOWN_TIMEOUT`. Avoids the classic 502s during rollouts/scale-down. |
-| `maxUnavailable: 0`           | Rollouts never dip below desired capacity.                             |
-| **PodDisruptionBudget** (min 2) | Voluntary disruptions (node drains, upgrades) can't take the service below 2 replicas. |
-| **topologySpreadConstraints** | Replicas spread across AZs → one AZ loss ≠ outage.                     |
-| **HPA on CPU** (3→20)         | Absorbs traffic spikes; 5-min scale-down stabilisation avoids flapping.|
-| **No preStop sleep**          | distroless has no shell — drain is handled in the app instead of a hook.|
+If a pod is popped via RCE, here is what the attacker actually gets — and what
+was deliberately denied.
 
-**Why no CPU limit but a memory limit:** CPU limits cause CFS throttling that
-adds tail latency to a latency-sensitive read path; requests + HPA already
-protect neighbours. A memory limit stays, to turn a leak into a bounded OOMKill
-rather than a noisy-neighbour node event.
+**API pod (`accounts_api`):**
+- *DB:* `SELECT` on `accounts` **only**. Cannot INSERT/UPDATE/DELETE, cannot run
+  DDL, cannot read `audit_log`/`processed_events`, does not own any object — so it
+  **cannot tamper with or erase the audit trail**, only read accounts it already
+  serves.
+- *Secrets:* its IRSA role reads **one** secret (`prod/accounts/database-url`).
+  Not the consumer's secret, not "all secrets."
+- *Network:* egress restricted by NetworkPolicy to DNS + 5432 + Kafka ports;
+  IMDSv2-required blocks the classic SSRF→node-role credential theft.
 
----
+**Consumer pod (`accounts_consumer`) — a separate SA, role, and secret:**
+- *DB:* `INSERT/SELECT` on `audit_log` + `processed_events`; **no UPDATE/DELETE**
+  (append-only, so it can't rewrite history) and **no access to `accounts`**.
+- *Kafka:* `ReadData` on `accounts.audit`, `WriteData` on the **DLQ only** — it
+  cannot forge events onto the main audit topic.
 
-## 5. Security controls (the bank part)
-
-**Identity & secrets — no static credentials anywhere.**
-
-- `DATABASE_URL` lives in **Secrets Manager**, generated by Terraform (the DB
-  password never appears in code and isn't emitted as a plaintext output).
-- **External Secrets Operator** projects it into a K8s Secret using the pod's
-  **IRSA** role — the app never holds AWS keys.
-- IRSA is **least privilege**: read *one* secret, connect/write *one* MSK topic.
-  MSK uses **SASL/IAM**, so there are no Kafka passwords either.
-
-**Runtime hardening (defence in depth).**
-
-- `runAsNonRoot` (uid 65532), `readOnlyRootFilesystem`, `allowPrivilegeEscalation:
-  false`, all capabilities dropped, `seccompProfile: RuntimeDefault`.
-- distroless image: no shell, no package manager → nothing to pivot to.
-
-**Network.** Default-deny `NetworkPolicy`; only the ingress controller and
-Prometheus can reach the pods; egress limited to DNS, Postgres, and Kafka.
-
-**Data protection.** KMS encryption at rest (EKS secrets, RDS, MSK, ECR);
-`sslmode=require` to RDS; TLS in transit to MSK; IMDSv2 required on nodes (blocks
-SSRF-based credential theft).
-
-**Supply chain.** Immutable ECR tags; scan-on-push; **Trivy** gate on
-HIGH/CRITICAL in CI; **SBOM + provenance**; **cosign** keyless signatures;
-**gitleaks** secret scanning; **tfsec** on the IaC. Deploys are pinned to an
-immutable image digest via the GitOps tag bump.
-
-**Auditability.** EKS control-plane audit logs, RDS/MSK logs to CloudWatch, and
-the application's own `account.read` audit stream — the trail a regulator asks for.
+**Deliberately denied across the board:** superuser/owner DB rights, DDL at
+runtime, cross-workload secret access, static long-lived AWS keys (OIDC/IRSA
+only), and node-metadata credential access. The two workloads have **independent
+blast radii**: compromising the read path yields no write access and no path to
+the audit store.
 
 ---
 
-## 6. Data tier
+## 4. Recovery
 
-- **RDS Postgres, Multi-AZ** for automatic failover; 14-day PITR; deletion
-  protection; Performance Insights. Local equivalent is the Postgres container.
-- **Migrations as a Helm pre-upgrade hook Job** (`golang-migrate`), so schema
-  changes run *before* the new app version rolls out and are version-tracked and
-  idempotent — not baked into app startup (which races across replicas).
-- **Conservative pgx pool** (max 10/replica). Across 20 replicas that's a bounded
-  200 connections — protecting RDS connection slots matters more than raw
-  per-pod throughput for this workload.
+**Postgres.**
+- **RPO ≈ 5 min**, backed by RDS automated backups + transaction-log archiving
+  (PITR). A bank could push tighter with a synchronous replica, at a latency cost;
+  5 min is the honest number for async PITR and is acceptable for this read
+  service whose source-of-truth writes happen elsewhere.
+- **RTO ≈ 30–60 min**: restore is a new RDS instance from a snapshot + PITR replay,
+  then repoint the Secrets Manager endpoint. Multi-AZ handles *instance* failure
+  automatically in ~1–2 min (that's HA, not backup); the RTO above is for the
+  *data-loss/corruption* case a failover can't fix.
+- **Proving the runbook before I need it:** a **scheduled restore drill** — a
+  monthly job that restores the latest snapshot to a throwaway instance, runs a
+  row-count + checksum against a known baseline, records the measured RTO, and
+  alerts if the restore fails or exceeds target. An untested backup is a guess;
+  the drill turns RPO/RTO from aspiration into a measured, alerting number.
 
----
-
-## 7. Messaging tier
-
-- **MSK / Kafka** as the event backbone — the credible choice for a bank's
-  fraud/audit/downstream fan-out. Partitioned by account id (`kafka.Hash`) for
-  per-account ordering; `RequireAll` acks for durability.
-- Delivery is **at-least-once**; consumers must be idempotent. Producing is async
-  and best-effort as described in §3.
-
----
-
-## 8. CI/CD & GitOps
-
-- **CI = build/verify/sign; CD = Argo CD reconcile.** CI never `kubectl apply`s
-  to the cluster — it commits a tag to Git and Argo CD converges. This gives an
-  auditable deploy history, trivial rollback (revert a commit), and drift
-  correction (`selfHeal`). Argo's `AppProject` whitelists only the namespaced
-  kinds this app needs — least privilege for the deployer too.
-- Terraform and Helm each have their own validate pipeline so a bad manifest or
-  plan fails on the PR, not in the cluster.
+**Messaging.**
+- Offsets are committed **only after** the side effect succeeds, so events
+  in-flight during an outage are **not lost** — on recovery they're redelivered
+  and the dedupe ledger makes reprocessing a no-op. Unprocessed events sit safely
+  in Kafka within the retention window; the consumer resumes from its last
+  committed offset. Poison/persistently-failing messages are parked to the DLQ so
+  one bad event can't block the partition, and are replayable once fixed.
 
 ---
 
-## 9. Observability
+## 5. What I cut, and what I'd do first in a real rollout
 
-- **RED metrics**: request rate, errors (by status), duration histogram —
-  labelled by a stable route name, not the raw `{id}` path, to avoid cardinality
-  blow-ups.
-- **An explicit SLO** (99.5% success on `get_account`) with **multi-window,
-  multi-burn-rate alerting** — the fast-burn alert pages only when both the 5m
-  and 1h windows exceed 14.4× budget, which suppresses false pages while still
-  catching real regressions quickly. Plus latency-p99, DB-down, zero-ready, and
-  audit-degraded alerts.
-- Grafana dashboard checked in as code; structured JSON logs to stdout (→
-  CloudWatch/Loki). See §12 for tracing.
+**Cut for the time box (approach noted so the reasoning scores):**
+- **RDS IAM auth** — I shipped Secrets-Manager-sourced credentials; IAM auth
+  (15-min tokens, no stored password) is strictly better and is change #1.
+- **Real `terraform apply` + live plan** — validated only (no cloud account per
+  the rules); `terraform/PLAN.txt` is the representative plan.
+- **Service mesh mTLS**, **KEDA scaling on Kafka lag** (CPU HPA is adequate for
+  this read service; lag-based scaling is the right call for the *consumer* and is
+  next), **multi-env promotion** (structure is there via the values overlay +
+  Argo project; I built one environment well), and **secret rotation Lambda**.
+- **Per-workload NetworkPolicy CIDR-tightening** to the VPC range (currently
+  egress is port-scoped but not CIDR-scoped).
 
----
-
-## 10. Infrastructure as code
-
-- Community modules for VPC/EKS/RDS (don't reinvent well-trodden infra), native
-  resources for the bank-specific bits (ECR policy, MSK IAM auth, IRSA, secret
-  composition).
-- **Remote state on S3 + DynamoDB lock** (shown, commented so `init` works
-  offline). Private subnets for all workloads and data; one NAT per AZ (no
-  cross-AZ egress SPOF); 3 AZs throughout.
-
----
-
-## 11. What I consciously left OUT (and why)
-
-These are deliberate scope cuts, not oversights:
-
-- **Write endpoints / real business logic** — the brief says the app isn't the
-  point; adding writes would spend time without exercising new platform surface.
-- **Distributed tracing (OTel)** — I'd wire OpenTelemetry → Tempo/X-Ray next; it's
-  the highest-value *addition*, but metrics + logs cover the SLO story first.
-- **Service mesh (mTLS between pods)** — a NetworkPolicy is the right first
-  control; a mesh (Istio/Linkerd) is justified once there are many services, not
-  one.
-- **Multi-environment promotion (dev/stage/prod)** — structure is there (values
-  overlay, Argo project) but I built one environment well rather than three
-  thinly.
-- **Secret rotation Lambda, WAF, PrivateLink, backup/restore drills, DR runbook**
-  — named here so the reviewer sees I know they belong in a real bank; out of
-  scope for the time box.
-- **Autoscaling on custom metrics (RPS/latency via KEDA)** — CPU HPA is adequate
-  for this workload; KEDA is the next step if CPU proves a poor proxy.
-
----
-
-## 12. If I had another day
-
-1. OpenTelemetry tracing end-to-end (ingress → app → Postgres/Kafka).
-2. `terraform plan` in CI via a read-only OIDC role, posted to the PR.
-3. A `dev` overlay + Argo ApplicationSet for env promotion.
-4. Contract/integration tests against ephemeral Postgres + Kafka in CI
-   (testcontainers).
-5. Secrets Manager rotation + a documented DB failover / restore drill.
-
----
-
-## Assumptions
-
-- Cluster has kube-prometheus-stack, External Secrets Operator, and an ingress
-  controller installed (platform add-ons, out of scope to provision here).
-- GHCR stands in for ECR during the assessment; the Terraform provisions the real
-  ECR repo for the production path.
-- Single region, single environment for the time box; the design extends to
-  multi-region/multi-env without rework.
+**First three in a real rollout:** (1) RDS IAM auth, (2) the automated restore
+drill wired to alerting, (3) KEDA lag-based autoscaling for the consumer. In that
+order — credentials and proven recovery before scaling polish.

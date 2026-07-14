@@ -1,0 +1,18 @@
+{{- if and .Values.consumer.enabled .Values.kafka.brokers }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "accounts.fullname" . }}-consumer
+  labels:
+    {{- include "accounts.labels" . | nindent 4 }}
+    app.kubernetes.io/component: consumer
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "accounts.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: consumer
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- end }}

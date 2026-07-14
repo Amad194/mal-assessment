@@ -15,6 +15,15 @@ output "irsa_role_arn" {
   value       = aws_iam_role.accounts_irsa.arn
 }
 
+output "consumer_irsa_role_arn" {
+  description = "Set as serviceAccount.consumerRoleArn in values-prod.yaml"
+  value       = aws_iam_role.accounts_consumer_irsa.arn
+}
+
+output "consumer_database_url_secret_arn" {
+  value = aws_secretsmanager_secret.consumer_database_url.arn
+}
+
 output "msk_bootstrap_brokers_tls" {
   description = "Set as kafka.brokers in values-prod.yaml"
   value       = aws_msk_cluster.accounts.bootstrap_brokers_tls

@@ -1,0 +1,67 @@
+{{- if and .Values.consumer.enabled .Values.kafka.brokers }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "accounts.fullname" . }}-consumer
+  labels:
+    {{- include "accounts.labels" . | nindent 4 }}
+    app.kubernetes.io/component: consumer
+spec:
+  replicas: {{ .Values.consumer.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "accounts.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: consumer
+  template:
+    metadata:
+      labels:
+        {{- include "accounts.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: consumer
+    spec:
+      serviceAccountName: {{ if .Values.serviceAccount.create }}{{ include "accounts.fullname" . }}-consumer{{ else }}default{{ end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: accounts-consumer
+          image: "{{ .Values.consumer.image.repository }}:{{ .Values.consumer.image.tag }}"
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "accounts.fullname" . }}-consumer-db
+                  key: database-url
+            - name: KAFKA_BROKERS
+              value: {{ .Values.kafka.brokers | quote }}
+            - name: KAFKA_TOPIC
+              value: {{ .Values.kafka.topic | quote }}
+            - name: KAFKA_DLQ_TOPIC
+              value: {{ .Values.consumer.dlqTopic | quote }}
+            - name: KAFKA_GROUP_ID
+              value: {{ .Values.consumer.groupId | quote }}
+            - name: MAX_RETRIES
+              value: {{ .Values.consumer.maxRetries | quote }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources: {{- toYaml .Values.consumer.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      terminationGracePeriodSeconds: 30
+{{- end }}

@@ -110,3 +110,33 @@ jobs:
             sleep $((i * 3))
           done
           echo "failed to push bump after retries" >&2; exit 1
+
+  # Production-equivalent deploy. In GitOps, Argo CD reconciles the bumped tag;
+  # this job exists to show the OIDC + manual-approval + rollback path a push-based
+  # deploy would use. It is gated on the `production` GitHub Environment (which
+  # carries the required-reviewer approval rule) and skipped until an AWS deploy
+  # role is configured, so it never fails on a repo without cloud creds.
+  deploy-production:
+    needs: gitops-bump
+    if: github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    environment: production   # <-- manual approval gate (required reviewers)
+    permissions:
+      id-token: write         # OIDC — no long-lived static keys
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: eu-west-2
+      - name: Deploy (Argo CD sync of the bumped tag)
+        run: |
+          aws eks update-kubeconfig --name bank-platform --region eu-west-2
+          # GitOps: Argo CD auto-syncs the committed tag. For a push-based model:
+          #   helm upgrade --install accounts deploy/helm/accounts \
+          #     -f deploy/helm/accounts/values.yaml -f deploy/helm/accounts/values-prod.yaml
+          # Rollback: `git revert` the bump commit (Argo re-syncs the prior tag),
+          # or `argocd app rollback accounts`, or `helm rollback accounts`.
+          echo "Deploy handled by Argo CD reconcile; see docs/ROLLBACK.md"

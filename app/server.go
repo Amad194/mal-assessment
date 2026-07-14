@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Server holds the handler dependencies and the drain flag.
@@ -30,12 +33,21 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /readyz", instrument("readyz", s.handleReadyz))
 	mux.Handle("GET /metrics", metricsHandler())
 	mux.HandleFunc("GET /api/accounts/{id}", instrument("get_account", s.handleGetAccount))
+	// Internal, in-cluster only (blocked externally by NetworkPolicy). Called by
+	// the preStop hook to start failing readiness before the container stops.
+	mux.HandleFunc("GET /internal/drain", s.handleDrain)
 	return mux
 }
 
 // StartDraining flips readiness to failing so the pod is removed from Service
 // endpoints before we stop accepting new work.
 func (s *Server) StartDraining() { s.draining.Store(true) }
+
+func (s *Server) handleDrain(w http.ResponseWriter, r *http.Request) {
+	s.StartDraining()
+	s.log.Info("drain requested via preStop hook; readiness now failing")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "draining"})
+}
 
 // handleHealthz is liveness: it only reports that the process is up. It must
 // NOT depend on Postgres — a DB blip should not trigger a pod restart loop.
@@ -64,15 +76,21 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+
+	// Child span off the otelhttp server span => a trace path HTTP -> DB.
+	ctx, span := tracer().Start(r.Context(), "db.get_account")
+	span.SetAttributes(attribute.String("account.id", id))
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
 	acct, err := s.store.GetAccount(ctx, id)
+	span.End()
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "account not found"})
 		return
 	case err != nil:
+		span.SetStatus(codes.Error, "db error")
 		s.log.Error("get account failed", "id", id, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
@@ -87,7 +105,9 @@ func (s *Server) publishAudit(accountID string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
+		// event_id is the consumer's idempotency key (see the consumer service).
 		ev := map[string]any{
+			"event_id":   newUUID(),
 			"type":       "account.read",
 			"account_id": accountID,
 			"ts":         time.Now().UTC().Format(time.RFC3339),

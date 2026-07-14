@@ -1,0 +1,19 @@
+{{- if and .Values.consumer.enabled .Values.kafka.brokers .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "accounts.fullname" . }}-consumer
+  labels:
+    {{- include "accounts.labels" . | nindent 4 }}
+    app.kubernetes.io/component: consumer
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      {{- include "accounts.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: consumer
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

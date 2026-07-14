@@ -1,0 +1,90 @@
+name: ci-consumer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["consumer/**", ".github/workflows/ci-consumer.yaml"]
+  pull_request:
+    paths: ["consumer/**", ".github/workflows/ci-consumer.yaml"]
+
+concurrency:
+  group: ci-consumer-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  IMAGE: ghcr.io/amad194/accounts-consumer
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: consumer } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26", cache-dependency-path: consumer/go.mod }
+      - run: go mod download
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  build-scan-push:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build (load locally)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./consumer
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+      - name: Trivy image scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@v0.24.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Push (only after the scan passes)
+        run: docker push ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+      - uses: sigstore/cosign-installer@v3
+      - name: Cosign sign (keyless)
+        run: cosign sign --yes ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+
+  gitops-bump:
+    needs: build-scan-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bump consumer image tag in Helm values
+        run: |
+          sed -i -E "/^consumer:/,/^[^ ]/ s|(^    tag: ).*|\1\"${{ needs.build-scan-push.outputs.tag }}\"|" deploy/helm/accounts/values.yaml
+      - name: Commit
+        run: |
+          git config user.name  "Amad194"
+          git config user.email "amadshahzad830@gmail.com"
+          git add deploy/helm/accounts/values.yaml
+          git commit -m "ci: bump accounts-consumer image to ${{ needs.build-scan-push.outputs.tag }} [skip ci]" || { echo "no change"; exit 0; }
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main && git push && exit 0
+            sleep $((i * 3))
+          done
+          echo "failed to push bump after retries" >&2; exit 1

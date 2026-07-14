@@ -1,0 +1,19 @@
+{
+  "_comment": "IAM trust policy for the GitHub Actions -> AWS OIDC deploy role (aws_iam_role assumed by the deploy-production job). No long-lived keys: GitHub's OIDC provider issues a short-lived web-identity token; the sub claim is scoped to THIS repo and the `production` environment only, so no other repo, branch, or a PR fork can assume the role. Account id sanitised.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:Amad194/mal-assessment:environment:production"
+        }
+      }
+    }
+  ]
+}

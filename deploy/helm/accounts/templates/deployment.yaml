@@ -33,6 +33,7 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
+        runAsGroup: 65532
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
@@ -58,6 +59,10 @@ spec:
             - name: KAFKA_TOPIC
               value: {{ .Values.kafka.topic | quote }}
             {{- end }}
+            {{- if .Values.otel.endpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            {{- end }}
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 3
@@ -68,9 +73,17 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 5
             failureThreshold: 2
-          # No preStop hook: the distroless image has no shell/sleep. Draining
-          # is handled in-process — on SIGTERM the app fails readiness, waits
-          # SHUTDOWN_DELAY for endpoints to converge, then drains connections.
+          # --- Zero-downtime rollout mechanism ---------------------------------
+          # 1. Pod enters Terminating -> kubelet removes it from Service endpoints.
+          # 2. preStop runs FIRST (before SIGTERM): the binary hits /internal/drain
+          #    so /readyz starts returning 503, then sleeps SHUTDOWN_DELAY so the
+          #    LB/kube-proxy converge while in-flight requests still complete.
+          # 3. Only then does the container get SIGTERM; the app drains connections
+          #    within SHUTDOWN_TIMEOUT, all inside terminationGracePeriodSeconds.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/accounts-api", "-presleep"]
           resources: {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false

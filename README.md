@@ -30,16 +30,20 @@ Seeded ids: `11111111-1111-1111-1111-111111111111`, `22222222-2222-2222-2222-222
 ## Repository layout
 
 ```
-app/                     Go service (stdlib HTTP + pgx + prometheus + kafka-go)
+app/                     API service (Go: HTTP + pgx + prometheus + kafka-go + OTel)
+consumer/                Idempotent Kafka consumer (dedupe ledger + poison->DLQ)
 db/migrations/           SQL migrations (golang-migrate format)
-deploy/helm/accounts/    Helm chart: Deployment, Service, HPA, PDB, NetworkPolicy,
-                         ExternalSecret, ServiceMonitor, PrometheusRule, migrate Job
+db/roles.sql             Least-privilege DB roles (accounts_api, accounts_consumer)
+deploy/helm/accounts/    Helm chart: API + consumer Deployments, Services, probes,
+                         HPA, PDB, NetworkPolicy, ExternalSecrets, ServiceMonitors,
+                         PrometheusRule, migrate Job, per-workload ServiceAccounts
 deploy/argocd/           Argo CD AppProject + Application (GitOps CD)
-terraform/               VPC, EKS, ECR, RDS, MSK, IRSA, Secrets Manager
+terraform/               VPC, EKS, ECR, RDS, MSK, IRSA (x2), Secrets Manager, PLAN.txt
 observability/           Grafana dashboard (alerts live in the chart's PrometheusRule)
-.github/workflows/       CI (build/scan/sign/GitOps bump), Terraform, Helm, security
+docs/                    CREDENTIALS.md, OBSERVABILITY.md (+PII), ROLLBACK.md, OIDC policy
+.github/workflows/       ci (api), ci-consumer, terraform, helm, security
 scripts/                 kind cluster config
-docker-compose.yaml      Local stack: Postgres + Kafka + app
+docker-compose.yaml      Local stack: Postgres + Kafka + API + consumer
 ```
 
 ## AWS ⇄ local mapping
@@ -53,6 +57,15 @@ docker-compose.yaml      Local stack: Postgres + Kafka + app
 | Secrets Manager     | `DATABASE_URL` at rest       | Helm `localSecret` (kind) / plain Secret |
 | IAM (IRSA)          | Pod → AWS authz, no static keys | n/a locally (noop publisher)          |
 | ELB/ALB             | Ingress                      | kind ingress-nginx                       |
+| MSK DLQ topic       | `accounts.audit.dlq`         | same topic on local Kafka                |
+| OTel Collector      | trace export (OTLP)          | set `OTEL_EXPORTER_OTLP_ENDPOINT` or off |
+
+### Deep-dive docs
+- [`docs/CREDENTIALS.md`](docs/CREDENTIALS.md) — secret flow + AWS mapping (no plaintext)
+- [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) — RED metrics, trace path, alert, **PII scrubbing**
+- [`docs/ROLLBACK.md`](docs/ROLLBACK.md) — deploy (OIDC + approval) & rollback path
+- [`db/roles.sql`](db/roles.sql) — least-privilege roles; [`terraform/PLAN.txt`](terraform/PLAN.txt) — sanitised plan
+- [`DECISIONS.md`](DECISIONS.md) — Part 2
 
 ---
 
@@ -69,7 +82,16 @@ curl localhost:8080/metrics | head
 ```
 
 `/readyz` returns 503 until Postgres is healthy, then 200. Reading an account
-publishes an `account.read` event to the local Kafka `accounts.audit` topic.
+publishes an `account.read` event to `accounts.audit`; the **consumer** records it
+idempotently in `audit_log`. Verify the consumer + idempotency:
+
+```bash
+# read the same account 3x -> 3 events published, exactly 1 audit row
+for i in 1 2 3; do curl -s localhost:8080/api/accounts/11111111-1111-1111-1111-111111111111 >/dev/null; done
+docker compose exec postgres psql -U accounts -c "SELECT count(*) FROM audit_log;"        # 1
+docker compose exec postgres psql -U accounts -c "SELECT count(*) FROM processed_events;" # 1
+curl -s localhost:8081/metrics | grep consumer_messages   # processed / deduplicated / dead_lettered
+```
 
 ### B. On Kubernetes (kind)
 
