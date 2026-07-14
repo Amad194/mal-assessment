@@ -1,0 +1,30 @@
+name: terraform
+
+on:
+  push:
+    branches: [main]
+    paths: ["terraform/**", ".github/workflows/terraform.yaml"]
+  pull_request:
+    paths: ["terraform/**"]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: terraform } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.5" }
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - name: tfsec (IaC security scan)
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with: { working_directory: terraform }
+      # Plan is illustrative only — no AWS creds wired here; a real pipeline
+      # would assume a read-only role via OIDC and post the plan to the PR.
+      # - run: terraform plan -no-color

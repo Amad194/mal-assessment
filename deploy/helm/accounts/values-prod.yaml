@@ -1,0 +1,23 @@
+# Production overlay (referenced by the Argo CD Application).
+# Values here assume real AWS: MSK brokers, IRSA role, Secrets Manager.
+replicaCount: 3
+
+kafka:
+  brokers: "REPLACE_WITH_MSK_BOOTSTRAP_BROKERS" # from terraform output msk_bootstrap_brokers
+
+serviceAccount:
+  roleArn: "REPLACE_WITH_IRSA_ROLE_ARN" # from terraform output irsa_role_arn
+
+externalSecrets:
+  enabled: true
+  secretStoreRef: aws-secrets-manager
+  remoteKey: prod/accounts/database-url
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 65
+
+networkPolicy:
+  enabled: true

@@ -1,0 +1,15 @@
+{{- if .Values.migrateJob.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "accounts.fullname" . }}-migrations
+  labels: {{- include "accounts.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10" # created before the migrate Job
+data:
+{{- range $path, $_ := .Files.Glob "migrations/*.sql" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

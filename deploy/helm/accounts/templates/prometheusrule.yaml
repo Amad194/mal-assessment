@@ -1,0 +1,75 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "accounts.fullname" . }}
+  labels:
+    {{- include "accounts.labels" . | nindent 4 }}
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: accounts.slo
+      rules:
+        # SLO: 99.5% of get_account requests succeed (non-5xx).
+        # Recording rules for the error ratio over two windows for multi-window
+        # multi-burn-rate alerting.
+        - record: accounts:request_error_ratio:rate5m
+          expr: |
+            sum(rate(http_requests_total{route="get_account",status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{route="get_account"}[5m]))
+        - record: accounts:request_error_ratio:rate1h
+          expr: |
+            sum(rate(http_requests_total{route="get_account",status=~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total{route="get_account"}[1h]))
+
+    - name: accounts.alerts
+      rules:
+        - alert: AccountsFastErrorBurn
+          # 14.4x burn rate => exhausts a 30-day budget in ~2 days. Page.
+          expr: |
+            accounts:request_error_ratio:rate5m > (14.4 * 0.005)
+            and
+            accounts:request_error_ratio:rate1h > (14.4 * 0.005)
+          for: 2m
+          labels: { severity: page }
+          annotations:
+            summary: "accounts-api burning error budget fast"
+            description: "5xx ratio is >14.4x the SLO budget over 5m and 1h."
+
+        - alert: AccountsHighLatencyP99
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{route="get_account"}[5m])) by (le)
+            ) > 0.5
+          for: 10m
+          labels: { severity: ticket }
+          annotations:
+            summary: "accounts-api p99 latency > 500ms"
+            description: "p99 for get_account has exceeded 500ms for 10m."
+
+        - alert: AccountsDBDown
+          expr: max(accounts_db_up) == 0
+          for: 1m
+          labels: { severity: page }
+          annotations:
+            summary: "accounts-api cannot reach Postgres"
+            description: "All replicas report accounts_db_up=0; readiness is failing."
+
+        - alert: AccountsNoReadyReplicas
+          expr: |
+            kube_deployment_status_replicas_available{deployment="{{ include "accounts.fullname" . }}"} == 0
+          for: 1m
+          labels: { severity: page }
+          annotations:
+            summary: "accounts-api has zero ready replicas"
+
+        - alert: AccountsAuditPublishFailing
+          expr: rate(accounts_audit_publish_failures_total[5m]) > 0
+          for: 15m
+          labels: { severity: ticket }
+          annotations:
+            summary: "accounts-api audit events failing to publish to Kafka"
+            description: "Audit trail is degraded (regulatory concern), reads still served."
+{{- end }}

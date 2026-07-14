@@ -1,0 +1,16 @@
+# Go
+/bin/
+app/cover.out
+
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+terraform/terraform.tfvars
+crash.log
+
+# Local
+.env
+*.local
+.DS_Store

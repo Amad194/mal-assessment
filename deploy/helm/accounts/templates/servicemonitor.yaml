@@ -1,0 +1,17 @@
+{{- if .Values.serviceMonitor.enabled }}
+# Prometheus Operator scrape config. Assumes kube-prometheus-stack is installed.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "accounts.fullname" . }}
+  labels:
+    {{- include "accounts.labels" . | nindent 4 }}
+    release: kube-prometheus-stack # matches the operator's serviceMonitorSelector
+spec:
+  selector:
+    matchLabels: {{- include "accounts.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: bank-platform
+  namespace: argocd
+spec:
+  description: Regulated bank platform apps
+  sourceRepos:
+    - https://github.com/amad194/mal-assessment.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: accounts
+  # Least privilege: whitelist only the namespaced kinds this app needs.
+  namespaceResourceWhitelist:
+    - { group: "apps", kind: Deployment }
+    - { group: "", kind: Service }
+    - { group: "", kind: ServiceAccount }
+    - { group: "", kind: ConfigMap }
+    - { group: "", kind: Secret }
+    - { group: "autoscaling", kind: HorizontalPodAutoscaler }
+    - { group: "policy", kind: PodDisruptionBudget }
+    - { group: "networking.k8s.io", kind: NetworkPolicy }
+    - { group: "batch", kind: Job }
+    - { group: "monitoring.coreos.com", kind: ServiceMonitor }
+    - { group: "monitoring.coreos.com", kind: PrometheusRule }
+    - { group: "external-secrets.io", kind: ExternalSecret }

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: accounts
+description: accounts-api — a containerized read service for a regulated bank platform
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

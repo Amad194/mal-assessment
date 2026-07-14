@@ -1,0 +1,5 @@
+# This repo is built and run on Linux. Keep LF everywhere so Go builds, shell,
+# YAML and Dockerfiles are not corrupted by CRLF on Windows checkouts.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

@@ -1,0 +1,54 @@
+{
+  "title": "accounts-api",
+  "uid": "accounts-api",
+  "tags": ["bank-platform", "sre"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request rate by status",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(http_requests_total{route=\"get_account\"}[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Error ratio (SLO 0.5%)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "accounts:request_error_ratio:rate5m", "legendFormat": "5m error ratio" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.005 } ] } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p50/p90/p99",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{route=\"get_account\"}[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket{route=\"get_account\"}[5m])) by (le))", "legendFormat": "p90" },
+        { "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{route=\"get_account\"}[5m])) by (le))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "stat",
+      "title": "DB up (min across replicas)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "targets": [ { "expr": "min(accounts_db_up)" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Audit publish failures/s",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "targets": [ { "expr": "rate(accounts_audit_publish_failures_total[5m])" } ]
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+name: helm
+
+on:
+  push:
+    branches: [main]
+    paths: ["deploy/helm/**", ".github/workflows/helm.yaml"]
+  pull_request:
+    paths: ["deploy/helm/**"]
+
+jobs:
+  lint-template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with: { version: "v3.15.2" }
+      - name: Sync migrations into chart
+        run: cp db/migrations/*.up.sql deploy/helm/accounts/migrations/
+      - run: helm lint deploy/helm/accounts -f deploy/helm/accounts/values.yaml
+      - name: Render manifests
+        run: helm template accounts deploy/helm/accounts > /tmp/rendered.yaml
+      - name: Validate rendered manifests against the K8s schema
+        uses: docker://ghcr.io/yannh/kubeconform:latest
+        with:
+          # CRDs (ServiceMonitor/ExternalSecret) are allowed to be missing.
+          args: -strict -ignore-missing-schemas -summary /tmp/rendered.yaml

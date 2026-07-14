@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", "deploy/helm/**", ".github/workflows/ci.yaml"]
+  pull_request:
+    paths: ["app/**", ".github/workflows/ci.yaml"]
+
+permissions:
+  contents: write   # bump image tag for GitOps
+  packages: write   # push to ghcr.io
+  id-token: write   # cosign keyless (OIDC)
+
+env:
+  IMAGE: ghcr.io/amad194/accounts-api
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23", cache-dependency-path: app/go.mod }
+      - run: go mod download
+      - run: go vet ./...
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+      - run: go test -race -coverprofile=cover.out ./...
+      - run: go tool cover -func=cover.out | tail -1
+
+  build-scan-push:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute tag
+        id: meta
+        run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          provenance: true
+          sbom: true
+      - name: Trivy image scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Cosign sign (keyless)
+        run: |
+          go install github.com/sigstore/cosign/v2/cmd/cosign@latest
+          cosign sign --yes ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+
+  gitops-bump:
+    needs: build-scan-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bump image tag in Helm values (Argo CD syncs this)
+        run: |
+          sed -i -E "s/^(  tag: ).*/\1\"${{ needs.build-scan-push.outputs.tag }}\"/" deploy/helm/accounts/values.yaml
+      - name: Commit
+        run: |
+          git config user.name  "Amad194"
+          git config user.email "amadshahzad830@gmail.com"
+          git add deploy/helm/accounts/values.yaml
+          git commit -m "ci: bump accounts-api image to ${{ needs.build-scan-push.outputs.tag }}" || echo "no change"
+          git push

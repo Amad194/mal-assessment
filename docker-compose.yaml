@@ -1,0 +1,44 @@
+# Local dev stack: Postgres + single-broker Kafka + the service.
+# This is the local equivalent of RDS (Postgres) and MSK (Kafka). It exists so
+# you can exercise the real code paths (readiness, DB read, audit publish)
+# without a cloud account. See README for the AWS mapping.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: accounts
+      POSTGRES_PASSWORD: accounts
+      POSTGRES_DB: accounts
+    ports: ["5432:5432"]
+    volumes:
+      - ./db/migrations/0001_init.up.sql:/docker-entrypoint-initdb.d/0001_init.up.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U accounts"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: bitnami/kafka:3.7
+    environment:
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports: ["9092:9092"]
+
+  accounts-api:
+    build: ./app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://accounts:accounts@postgres:5432/accounts?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: accounts.audit
+    ports: ["8080:8080"]
