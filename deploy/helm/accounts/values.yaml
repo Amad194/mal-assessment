@@ -26,7 +26,7 @@ consumer:
   enabled: true
   image:
     repository: ghcr.io/amad194/accounts-consumer
-    tag: "0.1.0"
+    tag: "9af8cc6"
   replicaCount: 2
   groupId: accounts-audit-consumer
   dlqTopic: accounts.audit.dlq
