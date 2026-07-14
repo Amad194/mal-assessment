@@ -14,3 +14,6 @@ crash.log
 .env
 *.local
 .DS_Store
+
+# Generated upload bundles (see scripts/build-submission.sh)
+submission/
