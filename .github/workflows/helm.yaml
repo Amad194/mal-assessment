@@ -1,6 +1,7 @@
 name: helm
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths: ["deploy/helm/**", ".github/workflows/helm.yaml"]
@@ -12,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v4.3.1
         with: { version: "v3.15.2" }
       - name: Sync migrations into chart
         run: cp db/migrations/*.up.sql deploy/helm/accounts/migrations/
