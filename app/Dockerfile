@@ -2,7 +2,7 @@
 # Base images are pinned to a digest (see the @sha256 below) so the build is
 # reproducible and can't drift under a moved tag. Digests are resolved/updated
 # by the bootstrap workflow (docker buildx imagetools inspect).
-FROM golang:1.26-alpine AS build
+FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
 WORKDIR /src
 
 # Cache module downloads separately from source for faster rebuilds.
@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/account
 # --- runtime stage ----------------------------------------------------------
 # distroless/static: no shell, no package manager, minimal CVE surface.
 # :nonroot runs as uid 65532 — matches the numeric securityContext in the chart.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
 WORKDIR /
 COPY --from=build /out/accounts-api /accounts-api
 USER 65532:65532
