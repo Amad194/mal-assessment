@@ -32,19 +32,19 @@ module "rds" {
 
   identifier = "accounts-db"
 
-  engine               = "postgres"
-  engine_version       = "16"
-  family               = "postgres16"
-  instance_class       = var.db_instance_class
-  allocated_storage    = 20
+  engine                = "postgres"
+  engine_version        = "16"
+  family                = "postgres16"
+  instance_class        = var.db_instance_class
+  allocated_storage     = 20
   max_allocated_storage = 100
-  storage_encrypted    = true # KMS at rest
+  storage_encrypted     = true # KMS at rest
 
-  db_name  = var.db_name
-  username = var.db_username
-  password = random_password.db.result
+  db_name                     = var.db_name
+  username                    = var.db_username
+  password                    = random_password.db.result
   manage_master_user_password = false # we manage it via Secrets Manager below
-  port     = 5432
+  port                        = 5432
 
   multi_az               = true # HA — automatic failover
   vpc_security_group_ids = [aws_security_group.rds.id]
@@ -55,6 +55,6 @@ module "rds" {
   deletion_protection     = true
   skip_final_snapshot     = false
 
-  performance_insights_enabled = true
+  performance_insights_enabled    = true
   enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
 }
