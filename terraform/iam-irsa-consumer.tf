@@ -51,8 +51,8 @@ data "aws_iam_policy_document" "consumer_msk" {
   }
   # Consume the audit topic + join the consumer group.
   statement {
-    effect  = "Allow"
-    actions = ["kafka-cluster:ReadData", "kafka-cluster:DescribeTopic"]
+    effect    = "Allow"
+    actions   = ["kafka-cluster:ReadData", "kafka-cluster:DescribeTopic"]
     resources = ["${replace(aws_msk_cluster.accounts.arn, ":cluster/", ":topic/")}/accounts.audit"]
   }
   statement {
@@ -62,8 +62,8 @@ data "aws_iam_policy_document" "consumer_msk" {
   }
   # Produce ONLY to the DLQ topic.
   statement {
-    effect  = "Allow"
-    actions = ["kafka-cluster:WriteData", "kafka-cluster:DescribeTopic", "kafka-cluster:CreateTopic"]
+    effect    = "Allow"
+    actions   = ["kafka-cluster:WriteData", "kafka-cluster:DescribeTopic", "kafka-cluster:CreateTopic"]
     resources = ["${replace(aws_msk_cluster.accounts.arn, ":cluster/", ":topic/")}/accounts.audit.dlq"]
   }
 }
