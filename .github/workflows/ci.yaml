@@ -55,14 +55,15 @@ jobs:
       - name: Compute tag
         id: meta
         run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Build and push
+      # Build and LOAD into the local daemon first so Trivy can scan the exact
+      # image before we publish it (scan-then-push, no unauthenticated pull).
+      - name: Build (load locally)
         uses: docker/build-push-action@v6
         with:
           context: ./app
-          push: true
+          load: true
+          push: false
           tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
-          provenance: true
-          sbom: true
       - name: Trivy image scan (fail on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@v0.24.0
         with:
@@ -70,6 +71,14 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          format: cyclonedx-json
+          artifact-name: accounts-api-sbom.cdx.json
+      - name: Push (only after the scan passes)
+        run: docker push ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
       - name: Cosign sign (keyless)
         run: |
           go install github.com/sigstore/cosign/v2/cmd/cosign@latest
