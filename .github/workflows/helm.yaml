@@ -19,9 +19,11 @@ jobs:
         run: cp db/migrations/*.up.sql deploy/helm/accounts/migrations/
       - run: helm lint deploy/helm/accounts -f deploy/helm/accounts/values.yaml
       - name: Render manifests
-        run: helm template accounts deploy/helm/accounts > /tmp/rendered.yaml
+        # Render into the workspace: the kubeconform container only mounts
+        # /github/workspace, so a /tmp path on the host wouldn't be visible.
+        run: helm template accounts deploy/helm/accounts > rendered.yaml
       - name: Validate rendered manifests against the K8s schema
         uses: docker://ghcr.io/yannh/kubeconform:latest
         with:
           # CRDs (ServiceMonitor/ExternalSecret) are allowed to be missing.
-          args: -strict -ignore-missing-schemas -summary /tmp/rendered.yaml
+          args: -strict -ignore-missing-schemas -summary rendered.yaml
