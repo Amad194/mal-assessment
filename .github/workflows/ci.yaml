@@ -79,10 +79,10 @@ jobs:
           artifact-name: accounts-api-sbom.cdx.json
       - name: Push (only after the scan passes)
         run: docker push ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
       - name: Cosign sign (keyless)
-        run: |
-          go install github.com/sigstore/cosign/v2/cmd/cosign@latest
-          cosign sign --yes ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+        run: cosign sign --yes ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
 
   gitops-bump:
     needs: build-scan-push
