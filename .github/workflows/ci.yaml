@@ -3,7 +3,11 @@ name: ci
 on:
   push:
     branches: [main]
-    paths: ["app/**", "deploy/helm/**", ".github/workflows/ci.yaml"]
+    # NB: deliberately NOT triggered by deploy/helm/** — otherwise the
+    # gitops-bump commit below (which edits values.yaml) would re-trigger this
+    # workflow in an infinite build loop. Chart-only changes are covered by
+    # helm.yaml. The [skip ci] on the bump commit is a second guard.
+    paths: ["app/**", ".github/workflows/ci.yaml"]
   pull_request:
     paths: ["app/**", ".github/workflows/ci.yaml"]
 
@@ -84,5 +88,5 @@ jobs:
           git config user.name  "Amad194"
           git config user.email "amadshahzad830@gmail.com"
           git add deploy/helm/accounts/values.yaml
-          git commit -m "ci: bump accounts-api image to ${{ needs.build-scan-push.outputs.tag }}" || echo "no change"
+          git commit -m "ci: bump accounts-api image to ${{ needs.build-scan-push.outputs.tag }} [skip ci]" || echo "no change"
           git push
