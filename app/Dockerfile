@@ -1,5 +1,5 @@
 # --- build stage ------------------------------------------------------------
-FROM golang:1.23-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 
 # Cache module downloads separately from source for faster rebuilds.
