@@ -1,7 +1,7 @@
 # Default values. values-prod.yaml overlays the production-hardened settings.
 image:
   repository: ghcr.io/amad194/accounts-api
-  tag: "0.1.0" # bumped by CI on each release (GitOps); Argo CD syncs the change
+  tag: "6f172c3"
   pullPolicy: IfNotPresent
 
 replicaCount: 3
